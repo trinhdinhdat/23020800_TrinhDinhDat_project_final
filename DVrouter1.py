@@ -1,23 +1,20 @@
 from router import Router
 from packet import Packet
 
-
 class DVrouter(Router):
     def __init__(self, addr, heartbeat_time):
         Router.__init__(self, addr)
         self.heartbeat_time = heartbeat_time
         self.last_time = 0
-        self.forwarding_table = {}  # dst -> next_hop
-        self.distance_vector = {}   # dst -> cost
-        self.neighbors = {}  # port -> (endpoint, cost)
+        self.forwarding_table = {}
+        self.distance_vector = {}
+        self.neighbors = {}
 
     def handle_packet(self, port, packet):
         print(f"[{self.addr}] Received packet on port {port}: {packet.content}")
         if packet.is_traceroute:
-            # Forward if known
             next_hop = self.forwarding_table.get(packet.dst_addr)
             if next_hop:
-                # Find port for next_hop
                 for p, (ep, _) in self.neighbors.items():
                     if ep == next_hop:
                         print(f"[{self.addr}] Forwarding traceroute packet to {next_hop} via port {p}")
@@ -26,10 +23,8 @@ class DVrouter(Router):
             else:
                 print(f"[{self.addr}] No route to {packet.dst_addr}, dropping packet")
         else:
-            # Routing packet (distance vector)
-            # Parse received distance vector from packet.content (assumed str encoding)
             updated = False
-            received_dv = eval(packet.content)  # NOTE: eval for simplicity, be careful
+            received_dv = eval(packet.content)
             sender = packet.src_addr
             cost_to_sender = self.neighbors[port][1]
 
