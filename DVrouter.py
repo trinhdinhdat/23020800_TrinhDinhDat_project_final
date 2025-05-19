@@ -1,79 +1,92 @@
 from router import Router
 from packet import Packet
 
+INFINITY = 9999
 
 class DVrouter(Router):
     def __init__(self, addr, heartbeat_time):
-        Router.__init__(self, addr)
+        super().__init__(addr)
         self.heartbeat_time = heartbeat_time
         self.last_time = 0
-        self.forwarding_table = {}  # dst -> next_hop
-        self.distance_vector = {}   # dst -> cost
-        self.neighbors = {}  # port -> (endpoint, cost)
+        self.forwarding_table = {}
+        self.distance_vector = {self.addr: (0, self.addr)}  
+        self.neighbors = {}  
 
     def handle_packet(self, port, packet):
-        print(f"[{self.addr}] Received packet on port {port}: {packet.content}")
         if packet.is_traceroute:
-            # Forward if known
             next_hop = self.forwarding_table.get(packet.dst_addr)
             if next_hop:
-                # Find port for next_hop
                 for p, (ep, _) in self.neighbors.items():
                     if ep == next_hop:
-                        print(f"[{self.addr}] Forwarding traceroute packet to {next_hop} via port {p}")
                         self.send(p, packet)
-                        break
-            else:
-                print(f"[{self.addr}] No route to {packet.dst_addr}, dropping packet")
-        else:
-            # Routing packet (distance vector)
-            # Parse received distance vector from packet.content (assumed str encoding)
-            updated = False
-            received_dv = eval(packet.content)  # NOTE: eval for simplicity, be careful
-            sender = packet.src_addr
-            cost_to_sender = self.neighbors[port][1]
+                        return
+            return  # Không có tuyến, bỏ packet
 
-            for dst, cost in received_dv.items():
-                new_cost = cost + cost_to_sender
-                if dst not in self.distance_vector or new_cost < self.distance_vector[dst]:
-                    self.distance_vector[dst] = new_cost
-                    self.forwarding_table[dst] = sender
-                    updated = True
+        updated = False
+        received_dv = eval(packet.content)
+        sender = packet.src_addr
+        endpoint = self.neighbors[port][0]
+        cost_to_sender = self.neighbors[port][1]
 
-            if updated:
-                print(f"[{self.addr}] Updated distance vector and forwarding table")
-                self.broadcast_distance_vector()
+        for dst, cost in received_dv.items():
+            if dst == self.addr:
+                continue  # không tự định tuyến về mình
+
+            new_cost = min(INFINITY, cost + cost_to_sender)
+            current_cost, current_next_hop = self.distance_vector.get(dst, (INFINITY, None))
+
+            if new_cost < current_cost or (current_next_hop == endpoint and new_cost != current_cost):
+                self.distance_vector[dst] = (new_cost, endpoint)
+                self.forwarding_table[dst] = endpoint
+                updated = True
+
+        if updated:
+            self.broadcast_distance_vector()
 
     def handle_new_link(self, port, endpoint, cost):
-        print(f"[{self.addr}] New link on port {port} to {endpoint} with cost {cost}")
         self.neighbors[port] = (endpoint, cost)
-        self.distance_vector[endpoint] = cost
+        self.distance_vector[endpoint] = (cost, endpoint)
         self.forwarding_table[endpoint] = endpoint
         self.broadcast_distance_vector()
 
     def handle_remove_link(self, port):
-        if port in self.neighbors:
-            endpoint = self.neighbors[port][0]
-            print(f"[{self.addr}] Removed link on port {port} to {endpoint}")
-            del self.neighbors[port]
-            if endpoint in self.distance_vector:
-                del self.distance_vector[endpoint]
-            if endpoint in self.forwarding_table:
-                del self.forwarding_table[endpoint]
+        if port not in self.neighbors:
+            return
+
+        endpoint = self.neighbors[port][0]
+        del self.neighbors[port]
+
+        updated = False
+
+        # Gỡ bỏ mọi route đi qua endpoint
+        to_remove = []
+        for dst, (cost, next_hop) in self.distance_vector.items():
+            if next_hop == endpoint:
+                to_remove.append(dst)
+
+        for dst in to_remove:
+            self.distance_vector[dst] = (INFINITY, None)
+            self.forwarding_table.pop(dst, None)
+            updated = True
+
+        if updated:
             self.broadcast_distance_vector()
 
     def handle_time(self, time_ms):
         if time_ms - self.last_time >= self.heartbeat_time:
             self.last_time = time_ms
-            print(f"[{self.addr}] Heartbeat at {time_ms} ms - sending distance vector")
             self.broadcast_distance_vector()
-            print(f"[{self.addr}] Current forwarding table: {self.forwarding_table}")
 
     def broadcast_distance_vector(self):
-        dv_str = str(self.distance_vector)
-        for port in self.neighbors:
-            pkt = Packet(Packet.ROUTING, self.addr, self.neighbors[port][0], content=dv_str)
-            print(f"[{self.addr}] Sending distance vector to {self.neighbors[port][0]} on port {port}: {dv_str}")
+        for port, (neighbor, _) in self.neighbors.items():
+            poisoned_dv = {}
+            for dst, (cost, next_hop) in self.distance_vector.items():
+                if next_hop == neighbor and dst != neighbor:
+                    poisoned_dv[dst] = INFINITY  # poison reverse
+                else:
+                    poisoned_dv[dst] = cost
+
+            pkt = Packet(Packet.ROUTING, self.addr, neighbor, content=str(poisoned_dv))
             self.send(port, pkt)
 
     def __repr__(self):
